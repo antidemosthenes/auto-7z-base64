@@ -1,0 +1,37 @@
+# Local environments and tool caches
+/.venv/
+/.venv-*/
+/.uv-cache/
+/.uv-python/
+/.test-tmp/
+/.pytest_cache/
+/.ruff_cache/
+/.mypy_cache/
+.tox/
+.nox/
+
+# Generated Python files and build output
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Coverage reports
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Local transfer data and review artifacts
+/encode-result/
+/decode-result/
+/test-case/
+/test_case/
+/work/
+/scripts/
+/docs/
+
+# Windows metadata
+Thumbs.db
+Desktop.ini

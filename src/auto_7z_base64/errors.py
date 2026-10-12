@@ -1,0 +1,2 @@
+class BundleError(Exception):
+    pass
