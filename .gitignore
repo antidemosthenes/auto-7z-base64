@@ -35,3 +35,7 @@ htmlcov/
 # Windows metadata
 Thumbs.db
 Desktop.ini
+
+AGENTS.md
+/.codex/
+/.agents/

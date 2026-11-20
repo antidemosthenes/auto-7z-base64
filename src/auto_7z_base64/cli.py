@@ -21,17 +21,23 @@ def limit_argument(value: str) -> int:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _print_progress(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if isinstance(stream, TextIOWrapper):
             stream.reconfigure(errors="backslashreplace")
+    prerequisites = "Requires Windows and 7-Zip 21.07 or newer with 7z.exe on PATH."
     parser = argparse.ArgumentParser(
         prog="auto-7z-base64",
         description="Transfer binary data as size-limited Base64 parts and recover it.",
+        epilog=prerequisites,
     )
     commands = parser.add_subparsers(dest="command", required=True)
     encode_parser = commands.add_parser(
-        "encode", help="Compress files/folders into plain Base64 TXT parts."
+        "encode", help="Compress files/folders into plain Base64 TXT parts.", epilog=prerequisites
     )
     encode_parser.add_argument("inputs", type=Path, nargs="+")
     encode_parser.add_argument(
@@ -53,8 +59,25 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     encode_parser.add_argument("--name", help="Archive name; default: input name or bundle.")
-    decode_parser = commands.add_parser("decode", help="Restore and extract TXT parts.")
-    decode_parser.add_argument("inputs", type=Path, nargs="+")
+    decode_parser = commands.add_parser(
+        "decode",
+        help="Restore and extract TXT parts.",
+        description=(
+            "Recover every archive in a folder, or use a filename to select one archive. "
+            "Keep each archive's numbered TXT parts together in one folder, starting at 001."
+        ),
+        epilog=prerequisites,
+    )
+    decode_parser.add_argument(
+        "inputs",
+        type=Path,
+        nargs="+",
+        help=(
+            "Folder or archive name hint. parts/photos.7z, parts/photos.7z.001.txt, and "
+            "parts/photos.7z.002.txt each select all photos parts beside them. "
+            "The hint itself can be absent."
+        ),
+    )
     decode_parser.add_argument(
         "--output",
         type=Path,
@@ -62,16 +85,17 @@ def main(argv: list[str] | None = None) -> int:
         help="New or empty output folder; default: decode-result in the current directory.",
     )
     args = parser.parse_args(argv)
+    progress = _print_progress if sys.stderr.isatty() else None
     try:
         if args.command == "encode":
-            encoded = encode(args.inputs, args.output, args.limit, args.name)
+            encoded = encode(args.inputs, args.output, args.limit, args.name, progress=progress)
             print(f"Encoded {encoded.parts} part(s).")
             print(
                 f"Binary volume limit: {encoded.volume_bytes:,} bytes; text budget: {args.limit:,} bytes."
             )
             print(f'Encoded TXT files saved to: "{encoded.output}"')
         else:
-            results = decode(args.inputs, args.output)
+            results = decode(args.inputs, args.output, progress=progress)
             for result in results:
                 print(f"Recovered {result.name}: {result.parts} part(s).")
                 print(f'Decoded files saved to: "{result.output}"')

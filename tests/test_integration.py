@@ -327,21 +327,48 @@ class IntegrationTests(WorkspaceTest):
         self.assertEqual(list(destination.iterdir()), [])
         self.assertFalse(list(self.root.glob(".bad-*")))
 
-    def test_corruption_and_missing_final_volume(self):
+    def test_each_filename_hint_recovers_the_complete_archive(self):
+        source = self.create_source("photos")
+        parts = self.root / "parts"
+        result = encode([source], parts, 4096)
+        self.assertGreater(result.parts, 2)
+        (parts / "broken.7z.002.txt").write_bytes(b"invalid")
+        for hint in ("photos.7z", "photos.7z.001.txt", "photos.7z.002.txt", "photos.7z.999.txt"):
+            with self.subTest(hint=hint):
+                output = self.root / f"from-{hint}"
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(
+                        main(["decode", str(parts / hint), "--output", str(output)]), 0
+                    )
+                self.assert_tree_equal(source, output / "photos")
+        (parts / "photos.7z").write_bytes(b"unrelated file contents")
+        decoded = decode([parts / "photos.7z"], self.root / "from-existing-archive")
+        self.assertEqual(decoded[0].parts, result.parts)
+        self.assert_tree_equal(source, decoded[0].output / "photos")
+
+    def test_missing_final_volume(self):
         source = self.create_source()
         encoded = self.root / "encoded"
         encode([source], encoded, 4096)
         parts = sorted(encoded.glob("*.txt"))
+        decode(parts[:-1], self.root / "complete")
+        self.assert_tree_equal(source, self.root / "complete" / "project")
+        parts[-1].unlink()
         with self.assertRaises(BundleError):
             decode(parts[:-1], self.root / "truncated")
-        first = parts[0]
+        self.assertFalse((self.root / "truncated").exists())
+
+    def test_corruption_in_first_volume(self):
+        source = self.create_source()
+        encoded = self.root / "encoded"
+        encode([source], encoded, 4096)
+        first = encoded / "project.7z.001.txt"
         original = first.read_bytes()
         index = 0
         changed = b"A" if original[index : index + 1] != b"A" else b"B"
         first.write_bytes(original[:index] + changed + original[index + 1 :])
         with self.assertRaises(BundleError):
-            decode(parts, self.root / "corrupt")
-        self.assertFalse((self.root / "truncated").exists())
+            decode([first], self.root / "corrupt")
         self.assertFalse((self.root / "corrupt").exists())
 
     def test_source_and_destination_rejections(self):
@@ -390,6 +417,36 @@ class IntegrationTests(WorkspaceTest):
         self.assertIn(f'Encoded TXT files saved to: "{encoded}"', stdout.getvalue())
         self.assertIn(f'Decoded files saved to: "{self.root / "recovered"}"', stdout.getvalue())
         self.assertIn("empty directory", stderr.getvalue())
+
+    def test_phase_updates_follow_interactive_stderr(self):
+        source = self.create_source(size=100)
+        for interactive in (True, False):
+            parts = self.root / f"parts-{interactive}"
+            recovered = self.root / f"restored-{interactive}"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                self.subTest(interactive=interactive),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+                patch.object(stderr, "isatty", return_value=interactive),
+            ):
+                self.assertEqual(main(["encode", str(source), "--output", str(parts)]), 0)
+                self.assertEqual(main(["decode", str(parts), "--output", str(recovered)]), 0)
+            if interactive:
+                for phase in (
+                    "Scanning",
+                    "Compressing",
+                    "Verifying",
+                    "Finding",
+                    "Reconstructing",
+                    "Extracting",
+                ):
+                    self.assertIn(phase, stderr.getvalue())
+                    self.assertNotIn(phase, stdout.getvalue())
+            else:
+                self.assertEqual(stderr.getvalue(), "")
+            self.assertIn("Encoded 1 part(s).", stdout.getvalue())
+            self.assertIn("Recovered project: 1 part(s).", stdout.getvalue())
 
     def test_cli_requires_only_inputs_for_both_commands(self):
         source = self.create_source(size=100)

@@ -4,12 +4,14 @@ import stat
 import tempfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .errors import BundleError
 from .prefetch import PrefetchPlan
 
 PART_PATTERN = re.compile(r"^(.+)\.7z\.([0-9]+)\.txt$", re.IGNORECASE)
+ARCHIVE_PATTERN = re.compile(r"^(.+)\.7z$", re.IGNORECASE)
 INVALID_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
     prefix + digit for prefix in ("COM", "LPT") for digit in "123456789¹²³"
@@ -118,46 +120,96 @@ def _transaction(output: Path) -> Iterator[tuple[Path, Path]]:
             raise
 
 
-def _part_candidates(path: Path) -> Iterator[Path]:
-    if not _check_regular(path):
-        if not PART_PATTERN.fullmatch(path.name):
-            raise BundleError(f"Expected name.7z.NNN.txt: {path.name}")
-        yield path
-        return
-    with os.scandir(path) as entries:
+def _part_number(digits: str, path: Path) -> int:
+    number = int(digits)
+    if number < 1 or digits != f"{number:03d}":
+        raise BundleError(f"Invalid part number: {path}")
+    return number
+
+
+def _archive_hint(path: Path) -> str:
+    if part := PART_PATTERN.fullmatch(path.name):
+        _part_number(part[2], path)
+        return part[1]
+    if archive := ARCHIVE_PATTERN.fullmatch(path.name):
+        return archive[1]
+    raise BundleError(f"Expected a folder, name.7z, or name.7z.NNN.txt: {path}")
+
+
+@dataclass
+class _FolderSelection:
+    all_archives: bool = False
+    names: dict[str, str] = field(default_factory=dict)
+
+
+def _folder_selections(inputs: Sequence[Path]) -> dict[Path, _FolderSelection]:
+    if not inputs:
+        raise BundleError("Provide a folder, a .7z name, or a numbered TXT part name.")
+    selections: dict[Path, _FolderSelection] = {}
+    for raw_path in inputs:
+        path = _absolute(Path(raw_path))
+        try:
+            directory = _check_regular(path)
+        except FileNotFoundError:
+            directory = False
+        if directory:
+            selections.setdefault(path, _FolderSelection()).all_archives = True
+        else:
+            name = _archive_hint(path)
+            _valid_name(name)
+            selection = selections.setdefault(path.parent, _FolderSelection())
+            selection.names[name.casefold()] = name
+    return selections
+
+
+def _scan_part_directory(
+    folder: Path, selection: _FolderSelection
+) -> Iterator[tuple[str, int, Path]]:
+    if not _check_regular(folder):
+        raise BundleError(f"Expected a folder containing TXT parts: {folder}")
+    missing = selection.names.copy()
+    with os.scandir(folder) as entries:
         for entry in entries:
-            if PART_PATTERN.fullmatch(entry.name):
-                if _check_stat(entry.path, entry.stat(follow_symlinks=False)):
-                    raise BundleError(f"Expected a TXT file: {entry.path}")
-                yield Path(entry.path)
+            match = PART_PATTERN.fullmatch(entry.name)
+            if not match:
+                continue
+            name, digits = match.groups()
+            key = name.casefold()
+            if not selection.all_archives and key not in selection.names:
+                continue
+            _valid_name(name)
+            if _check_stat(entry.path, entry.stat(follow_symlinks=False)):
+                raise BundleError(f"Expected a TXT file: {entry.path}")
+            path = Path(entry.path)
+            missing.pop(key, None)
+            yield name, _part_number(digits, path), path
+    if missing:
+        name = next(iter(missing.values()))
+        raise BundleError(f"No TXT parts found for archive {name} in folder {folder}")
 
 
 def _collect_parts(inputs: Sequence[Path]) -> dict[str, list[Path]]:
-    if not inputs:
-        raise BundleError("Provide a folder or TXT part files.")
-    groups: dict[str, tuple[str, dict[int, Path]]] = {}
-    for raw_path in inputs:
-        path = _absolute(Path(raw_path))
-        for candidate in _part_candidates(path):
-            match = PART_PATTERN.fullmatch(candidate.name)
-            if not match:
-                raise BundleError(f"Expected name.7z.NNN.txt: {candidate.name}")
-            name, digits = match.groups()
-            _valid_name(name)
-            number = int(digits)
-            if number < 1 or digits != f"{number:03d}":
-                raise BundleError(f"Invalid part number: {candidate.name}")
-            _, parts = groups.setdefault(name.casefold(), (name, {}))
+    selections = _folder_selections(inputs)
+    groups: dict[str, tuple[Path, dict[int, Path]]] = {}
+    for folder, selection in selections.items():
+        for name, number, path in _scan_part_directory(folder, selection):
+            previous_folder, parts = groups.setdefault(name.casefold(), (folder, {}))
+            if previous_folder != folder:
+                raise BundleError(
+                    f"Conflicting parts for archive {name} in folders {previous_folder} and {folder}"
+                )
             if number in parts:
-                raise BundleError(f"Duplicate part {number} for {name}")
-            parts[number] = candidate
+                raise BundleError(f"Duplicate part {number:03d} for {name} in {folder}")
+            parts[number] = path
     if not groups:
-        raise BundleError("No named .7z.NNN.txt parts were found.")
+        folders = ", ".join(map(str, selections))
+        raise BundleError(f"No named .7z.NNN.txt parts were found in: {folders}")
     collected = {}
-    for name, parts in sorted(groups.values()):
+    for folder, parts in groups.values():
         numbers = sorted(parts)
+        name = parts[numbers[0]].name.rsplit(".", 3)[0]
         for expected, actual in enumerate(numbers, 1):
             if expected != actual:
-                raise BundleError(f"Missing part {expected:03d} for {name}")
+                raise BundleError(f"Missing part {expected:03d} for {name} in {folder}")
         collected[name] = [parts[number] for number in numbers]
-    return collected
+    return dict(sorted(collected.items()))

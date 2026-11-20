@@ -12,7 +12,7 @@ Both machines require:
 Open PowerShell in this project's folder and run:
 
 ```powershell
-uv sync
+uv sync --locked
 Get-Command 7z.exe
 ```
 
@@ -48,7 +48,7 @@ uv run auto-7z-base64 encode "C:\data\report.pdf" "C:\data\photos" --name transf
 | `--limit SIZE` | Byte limit for each Base64 TXT file. Each file is strictly smaller than this limit. See size formats below. | `2MB` (2,000,000 bytes) |
 | `--name NAME` | Base name for the TXT parts, such as `transfer` for `transfer.7z.001.txt`. | The selected folder's name, a single file's name without its final extension, or `bundle` for multiple inputs |
 
-Folders include their subfolders, hidden files, and empty directories. Original inputs are preserved; leave them unchanged while encoding. Symbolic links, junctions, overlapping inputs, and conflicting input names are unsupported.
+Folders include their subfolders, hidden files, and empty directories. Original inputs are preserved; leave them unchanged while encoding. Encoding uses 7-Zip Ultra compression in solid mode, tests the archive, and verifies each Base64 part before publishing the output. Symbolic links, junctions, overlapping inputs, and conflicting input names are unsupported.
 
 ### Size formats
 
@@ -79,24 +79,47 @@ uv run auto-7z-base64 decode "received-parts"
 
 Recovered files are saved in `decode-result` in the current directory. Selected files and folders retain their original names; for the folder example above, the recovered contents are in `decode-result\my-project`. The terminal prints the recovery location.
 
-You can also select individual TXT files or choose another output folder:
+A folder input selects every archive directly inside it. To recover a single archive, give its `.7z` name or any numbered TXT filename. The decoder uses that name to find matching TXT parts in the same folder. The filename you type can be absent, and an existing binary `.7z` supplies only its name.
 
 ```powershell
 uv run auto-7z-base64 decode "C:\received-parts" --output "C:\recovered"
-uv run auto-7z-base64 decode "transfer.7z.002.txt" "transfer.7z.001.txt"
+uv run auto-7z-base64 decode "C:\received-parts\transfer.7z"
+uv run auto-7z-base64 decode "C:\received-parts\transfer.7z.001.txt"
+uv run auto-7z-base64 decode "C:\received-parts\transfer.7z.002.txt"
 ```
 
 | Argument | Meaning | Default |
 | --- | --- | --- |
-| `inputs` | One or more folders containing TXT parts, or individual TXT part files. All parts of each archive are required; input order does not matter. | Required |
+| `inputs` | One or more folders or filenames. Repeated selections of the same archive in one folder are combined. | Required |
 | `--output OUTPUT` | Destination for recovered files; must be a new or empty directory. | `decode-result` in the current directory |
 
-Folder scanning checks only that folder, without searching subfolders. Part filenames must retain the form `name.7z.001.txt`, `name.7z.002.txt`, and so on. Decoding accepts spaces and line breaks introduced while copying the Base64. If the inputs contain multiple archives, each archive is recovered into its own named subfolder.
+Keep each archive's parts in one folder. Archive names match case-insensitively. Selecting the same archive name from two folders is an error. Part numbers start at `001`, must be consecutive, and continue from `999` to `1000`. A file such as `transfer.7z.01.txt` has an invalid number. A file such as `transfer.7z.notes.txt` is ignored. The decoder reports the first gap it finds. If the final part is missing, 7-Zip detects the truncated archive before the decoder publishes the output.
+
+Decoding accepts spaces and line breaks introduced while copying the Base64. If the inputs contain multiple archives, each archive is recovered into its own named subfolder.
+
+For scripts, stdout contains the final result paths. Brief phase updates are written to stderr only when it is connected to an interactive terminal.
 
 ## Command help
+
+The help commands show the accepted options and defaults. Encoding and decoding require Windows and `7z.exe` on `PATH`:
 
 ```powershell
 uv run auto-7z-base64 --help
 uv run auto-7z-base64 encode --help
 uv run auto-7z-base64 decode --help
 ```
+
+## Development checks
+
+Install the locked development tools, then run the same checks as CI:
+
+```powershell
+uv sync --locked --all-extras
+uv run --locked --no-sync ruff check .
+uv run --locked --no-sync ruff format --check .
+uv run --locked --no-sync mypy
+uv run --locked --no-sync pytest
+uv build
+```
+
+The integration tests require Windows and 7-Zip on `PATH`. To run the local benchmark, use `uv run benchmarks/benchmark.py` with no arguments.

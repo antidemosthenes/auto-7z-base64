@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install 7-Zip
+        shell: pwsh
+        run: |
+          choco install 7zip.install --no-progress --yes
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip'
+          if (-not (Test-Path (Join-Path $sevenZip '7z.exe'))) {
+            throw "7-Zip installation did not provide $sevenZip\7z.exe"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $sevenZip
+          $env:PATH = "$sevenZip;$env:PATH"
+          Get-Command 7z.exe -ErrorAction Stop
+          7z.exe i
+
+      - name: Install locked development dependencies
+        run: uv sync --python 3.11 --locked --all-extras
+
+      - name: Check lint
+        run: uv run --locked --no-sync ruff check .
+
+      - name: Check formatting
+        run: uv run --locked --no-sync ruff format --check .
+
+      - name: Check types
+        run: uv run --locked --no-sync mypy
+
+      - name: Run tests
+        run: uv run --locked --no-sync pytest
+
+      - name: Build distributions
+        run: uv build

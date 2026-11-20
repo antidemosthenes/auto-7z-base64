@@ -69,6 +69,22 @@ class PrerequisiteTests(WorkspaceTest):
                 self.assertFalse(destination.exists())
                 self.assertFalse(list(self.root.glob(f".{operation.__name__}-*")))
 
+    def test_decode_help_explains_archive_selection(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout), self.assertRaises(SystemExit) as exit_context:
+            main(["decode", "--help"])
+        self.assertEqual(exit_context.exception.code, 0)
+        help_text = " ".join(stdout.getvalue().split())
+        for text in (
+            "parts/photos.7z,",
+            "parts/photos.7z.001.txt",
+            "parts/photos.7z.002.txt",
+            "can be absent",
+            "one folder",
+            "7z.exe on PATH",
+        ):
+            self.assertIn(text, help_text)
+
     def test_cli_reports_missing_path_executable(self):
         for command in ("encode", "decode"):
             stderr = io.StringIO()
