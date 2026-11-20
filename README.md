@@ -122,4 +122,4 @@ uv run --locked --no-sync pytest
 uv build
 ```
 
-The integration tests require Windows and 7-Zip on `PATH`. To run the local benchmark, use `uv run benchmarks/benchmark.py` with no arguments.
+The integration tests require Windows and 7-Zip on `PATH`. After checks pass on Python 3.11 and 3.14, CI smoke-tests the built wheel's command entry point and attaches the wheel and source distribution to the workflow run for download. Run the local benchmark with `uv run benchmarks/benchmark.py`.

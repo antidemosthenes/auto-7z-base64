@@ -8,23 +8,33 @@ permissions:
   contents: read
 
 jobs:
-  windows:
+  windows-checks:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+          python-version: ${{ matrix.python-version }}
 
       - name: Set up Python
-        run: uv python install 3.11
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Install 7-Zip
         shell: pwsh
         run: |
           choco install 7zip.install --no-progress --yes
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
           $sevenZip = Join-Path $env:ProgramFiles '7-Zip'
           if (-not (Test-Path (Join-Path $sevenZip '7z.exe'))) {
             throw "7-Zip installation did not provide $sevenZip\7z.exe"
@@ -35,7 +45,7 @@ jobs:
           7z.exe i
 
       - name: Install locked development dependencies
-        run: uv sync --python 3.11 --locked --all-extras
+        run: uv sync --python ${{ matrix.python-version }} --locked --all-extras
 
       - name: Check lint
         run: uv run --locked --no-sync ruff check .
@@ -49,5 +59,42 @@ jobs:
       - name: Run tests
         run: uv run --locked --no-sync pytest
 
+  package:
+    needs: windows-checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.11"
+
+      - name: Set up Python
+        run: uv python install 3.11
+
       - name: Build distributions
         run: uv build
+
+      - name: Smoke-test wheel installation
+        shell: pwsh
+        run: |
+          $wheels = @(Get-ChildItem -Path dist -Filter *.whl)
+          $sdists = @(Get-ChildItem -Path dist -Filter *.tar.gz)
+          if ($wheels.Count -ne 1 -or $sdists.Count -ne 1) {
+            throw "Expected one wheel and one source distribution in dist/"
+          }
+          & uv run --no-project --with "$($wheels[0].FullName)" auto-7z-base64 --help
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - uses: actions/upload-artifact@v7.0.0
+        with:
+          name: python-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14

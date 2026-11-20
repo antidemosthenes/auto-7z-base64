@@ -52,7 +52,7 @@ class IntegrationTests(WorkspaceTest):
             for path in source.rglob("*")
         }
         destination = self.root / "encode-result"
-        with patch("auto_7z_base64.codec._decode_file", side_effect=BundleError("failed")):
+        with patch("auto_7z_base64.codec._verify_part", side_effect=BundleError("failed")):
             with self.assertRaises(BundleError):
                 encode([source], destination, 4096)
         self.assertFalse(destination.exists())
@@ -79,7 +79,7 @@ class IntegrationTests(WorkspaceTest):
         for failure in (BundleError("verification failed"), KeyboardInterrupt()):
             with (
                 self.subTest(failure=type(failure).__name__),
-                patch("auto_7z_base64.codec._decode_file", side_effect=failure),
+                patch("auto_7z_base64.codec._verify_part", side_effect=failure),
             ):
                 with self.assertRaises(type(failure)):
                     encode([source], destination, 4096)
@@ -94,7 +94,8 @@ class IntegrationTests(WorkspaceTest):
         volumes.mkdir()
         for index in range(1, result.parts + 1):
             part = encoded / f"project.7z.{index:03d}.txt"
-            _decode_file(part, volumes / part.stem)
+            with (volumes / part.stem).open("wb") as volume:
+                _decode_file(part, volume)
         first = volumes / "project.7z.001"
         _run_7z(SEVENZIP, ["t", "-sccUTF-8", "--", str(first)])
         extracted = self.root / "native-extracted"

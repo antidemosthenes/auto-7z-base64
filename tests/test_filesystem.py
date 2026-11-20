@@ -97,13 +97,14 @@ class FilesystemTests(WorkspaceTest):
             _collect_parts([self.root, other_folder])
 
     def test_part_hint_scans_case_insensitively_and_ignores_notes(self):
-        first = self.part("one", 1)
+        first = self.root / "ONE.7Z.001.TXT"
+        first.write_bytes(b"AAAA")
         second = self.root / "ONE.7Z.002.TXT"
         second.write_bytes(b"AAAA")
         (self.root / "one.7z.003-note.txt").write_bytes(b"ignored")
         (self.root / "unrelated.7z.001.txt").mkdir()
         (self.root / "unrelated.7z.01.txt").touch()
-        self.assertEqual(_collect_parts([self.root / "ONE.7Z.002.TXT"]), {"one": [first, second]})
+        self.assertEqual(_collect_parts([self.root / "ONE.7Z.002.TXT"]), {"ONE": [first, second]})
 
     def test_selector_rejects_malformed_numbers_and_matching_directories(self):
         for filename in ("one.7z.000.txt", "one.7z.01.txt", "one.7z.0001.txt"):
@@ -131,6 +132,18 @@ class FilesystemTests(WorkspaceTest):
             self.skipTest(f"Symbolic links unavailable: {exc}")
         with self.assertRaisesRegex(BundleError, "Links and reparse points"):
             _collect_parts([self.root / "one.7z"])
+
+    def test_folder_links_are_rejected(self):
+        target = self.root / "parts"
+        target.mkdir()
+        self.part("one", 1, folder=target)
+        link = self.root / "parts-link"
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"Symbolic links unavailable: {exc}")
+        with self.assertRaisesRegex(BundleError, "Links and reparse points"):
+            _collect_parts([link])
 
     def test_multiple_sets_and_explicit_order(self):
         first = self.part("one", 1)

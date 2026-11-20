@@ -4,7 +4,6 @@ import hashlib
 import os
 import re
 from concurrent.futures import CancelledError
-from contextlib import nullcontext
 from pathlib import Path
 from threading import Event
 from typing import BinaryIO
@@ -89,29 +88,15 @@ def _payload_bounds(reader: BinaryIO, source: Path) -> tuple[int, int]:
     return start, end
 
 
-def _decode_file(
-    source: Path,
-    destination: Path | BinaryIO | None = None,
-    *,
-    cancel: Event | None = None,
-    checksum: bool = True,
-) -> str | None:
-    digest = hashlib.sha256() if checksum else None
+def _decode_file(source: Path, writer: BinaryIO) -> None:
     pending = b""
     finished = False
-    written = 0
-    with (
-        source.open("rb") as reader,
-        destination.open("wb")
-        if isinstance(destination, Path)
-        else nullcontext(destination) as writer,
-    ):
+    wrote_data = False
+    with source.open("rb") as reader:
         start, end = _payload_bounds(reader, source)
         reader.seek(start)
         remaining = end - start
-        while remaining:
-            if cancel is not None and cancel.is_set():
-                raise CancelledError
+        while remaining > 0:
             chunk = reader.read(min(BLOCK_BYTES, remaining))
             if not chunk:
                 raise BundleError(f"Input was truncated while decoding {source.name}")
@@ -125,27 +110,34 @@ def _decode_file(
                 continue
             encoded, pending = pending[:length], pending[length:]
             try:
-                decoded = base64.b64decode(encoded, validate=True)
-            except (binascii.Error, ValueError) as exc:
+                decoded = binascii.a2b_base64(encoded, strict_mode=True)
+            except binascii.Error as exc:
                 raise BundleError(f"Invalid Base64 in {source.name}: {exc}") from exc
             finished = b"=" in encoded
             if finished and pending:
                 raise BundleError(f"Data after Base64 padding in {source.name}")
-            if writer is not None:
-                writer.write(decoded)
-            if digest is not None:
-                digest.update(decoded)
-            written += len(decoded)
-        if pending or not written:
+            writer.write(decoded)
+            wrote_data = True
+        if pending or not wrote_data:
             raise BundleError(f"Empty or truncated Base64 in {source.name}")
-    return digest.hexdigest() if digest is not None else None
+
+
+def _verify_part(text: BinaryIO, path: Path, expected_digest: bytes, cancel: Event | None) -> None:
+    text.seek(0)
+    digest = hashlib.sha256()
+    while chunk := text.read(BLOCK_BYTES):
+        if cancel is not None and cancel.is_set():
+            raise CancelledError
+        digest.update(chunk)
+    if digest.digest() != expected_digest:
+        raise BundleError(f"Base64 verification failed: {path.name}")
 
 
 def _encode_part(
     reader: BinaryIO, text_path: Path, remaining: int, limit: int, cancel: Event | None = None
 ) -> None:
     digest = hashlib.sha256()
-    with text_path.open("wb") as text:
+    with text_path.open("w+b") as text:
         while remaining:
             if cancel is not None and cancel.is_set():
                 raise CancelledError
@@ -153,13 +145,12 @@ def _encode_part(
             if not data:
                 raise BundleError("Archive was truncated while encoding.")
             remaining -= len(data)
-            digest.update(data)
-            text.write(base64.b64encode(data))
-    text_bytes = text_path.stat().st_size
-    if text_bytes >= limit:
-        raise BundleError(f"Part exceeded the byte limit: {text_path.name}")
-    if _decode_file(text_path, cancel=cancel) != digest.hexdigest():
-        raise BundleError(f"Base64 verification failed: {text_path.name}")
+            encoded = base64.b64encode(data)
+            digest.update(encoded)
+            text.write(encoded)
+        if text.tell() >= limit:
+            raise BundleError(f"Part exceeded the byte limit: {text_path.name}")
+        _verify_part(text, text_path, digest.digest(), cancel)
 
 
 def _encode_range(

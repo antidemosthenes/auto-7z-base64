@@ -14,6 +14,8 @@ from auto_7z_base64.core import decode, encode
 from auto_7z_base64.filesystem import _collect_parts
 from auto_7z_base64.sevenzip import find_sevenzip
 
+LARGE_WORKLOAD_SEED = 20261119
+
 
 def _tree_snapshot(root: Path) -> dict[str, tuple[bool, int, str | None]]:
     snapshot = {}
@@ -40,7 +42,7 @@ def _make_workloads(root: Path, small_files: int, small_file_bytes: int, large_b
 
     large = root / "one-large-file"
     large.mkdir()
-    rng = random.Random(20261119)
+    rng = random.Random(LARGE_WORKLOAD_SEED)
     with (large / "random.bin").open("wb") as writer:
         remaining = large_bytes
         while remaining:
@@ -100,6 +102,7 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
         "sevenzip_version": _sevenzip_version(executable),
         "compression_level": 9,
         "solid_mode": True,
+        "large_workload_seed": LARGE_WORKLOAD_SEED,
         "text_limit_bytes": args.limit,
         "iterations": args.iterations,
         "workloads": measurements,

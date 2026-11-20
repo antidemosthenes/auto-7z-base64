@@ -13,6 +13,7 @@ from auto_7z_base64.codec import (
     MAX_LIMIT,
     _decode_file,
     _encode_archive,
+    _verify_part,
     parse_limit,
     volume_size,
 )
@@ -66,6 +67,22 @@ class SizeTests(unittest.TestCase):
 
 
 class Base64Tests(WorkspaceTest):
+    def decode(self, source):
+        writer = io.BytesIO()
+        _decode_file(source, writer)
+        return writer.getvalue()
+
+    def test_part_verification_checks_exact_base64_bytes(self):
+        source = self.root / "part.txt"
+        expected = hashlib.sha256(b"AQID").digest()
+        with source.open("w+b") as stream:
+            stream.write(b"AQID")
+            _verify_part(stream, source, expected, None)
+            stream.seek(0)
+            stream.write(b"AQIE")
+            with self.assertRaisesRegex(BundleError, "Base64 verification failed"):
+                _verify_part(stream, source, expected, None)
+
     def test_direct_part_encoding_preserves_byte_boundaries(self):
         for processors, (size, length) in product(
             (1, 8), ((3, 20), (6, 31), (BLOCK_BYTES + 3, BLOCK_BYTES * 4 + 14))
@@ -94,24 +111,15 @@ class Base64Tests(WorkspaceTest):
         for index, data in enumerate((b"\x01", b"\x02\x03", b"\x04\x05\x06")):
             source = self.root / f"{index}.txt"
             source.write_bytes(HTML_PREFIX + base64.b64encode(data) + HTML_SUFFIX)
-            self.assertIsNone(_decode_file(source, writer, checksum=False))
+            _decode_file(source, writer)
             self.assertFalse(writer.closed)
         self.assertEqual(writer.getvalue(), b"\x01\x02\x03\x04\x05\x06")
-
-    def test_hash_only_verification_creates_no_binary_file(self):
-        data = os.urandom(BLOCK_BYTES + 1)
-        source = self.root / "wrapped.txt"
-        source.write_bytes(HTML_PREFIX + base64.b64encode(data) + HTML_SUFFIX)
-        self.assertEqual(_decode_file(source), hashlib.sha256(data).hexdigest())
-        self.assertEqual(list(self.root.iterdir()), [source])
 
     def test_utf8_bom_in_plain_and_wrapped_text(self):
         for body in (b"AQID", HTML_PREFIX + b"AQID" + HTML_SUFFIX):
             source = self.root / "bom.txt"
             source.write_bytes(b"\xef\xbb\xbf" + body)
-            target = self.root / "output.bin"
-            _decode_file(source, target)
-            self.assertEqual(target.read_bytes(), b"\x01\x02\x03")
+            self.assertEqual(self.decode(source), b"\x01\x02\x03")
 
     def test_deterministic_randomized_round_trips(self):
         generator = random.Random(42)
@@ -123,9 +131,7 @@ class Base64Tests(WorkspaceTest):
             body = HTML_PREFIX + wrapped + HTML_SUFFIX if index % 2 else wrapped
             source = self.root / "random.txt"
             source.write_bytes(body)
-            target = self.root / "output.bin"
-            _decode_file(source, target)
-            self.assertEqual(target.read_bytes(), data)
+            self.assertEqual(self.decode(source), data)
 
     def test_wrapped_base64_streaming_and_line_endings(self):
         data = os.urandom(BLOCK_BYTES * 2 + 2)
@@ -134,9 +140,7 @@ class Base64Tests(WorkspaceTest):
         for opening in (HTML_PREFIX.replace(b"\n", b"\r\n"), b"<pre>\n"):
             source = self.root / "wrapped.txt"
             source.write_bytes(b" \t" + opening + wrapped + b"\r\n</pre>\r\n ")
-            target = self.root / "output.bin"
-            _decode_file(source, target)
-            self.assertEqual(target.read_bytes(), data)
+            self.assertEqual(self.decode(source), data)
 
     def test_wrapper_surrounded_by_large_whitespace(self):
         source = self.root / "wrapped.txt"
@@ -147,9 +151,7 @@ class Base64Tests(WorkspaceTest):
             + HTML_SUFFIX
             + b" " * (BLOCK_BYTES + 1)
         )
-        target = self.root / "output.bin"
-        _decode_file(source, target)
-        self.assertEqual(target.read_bytes(), b"\x01\x02\x03")
+        self.assertEqual(self.decode(source), b"\x01\x02\x03")
 
     def test_malformed_wrappers(self):
         for data in (
@@ -164,7 +166,7 @@ class Base64Tests(WorkspaceTest):
             source = self.root / "malformed.txt"
             source.write_bytes(data)
             with self.subTest(data=data), self.assertRaises(BundleError):
-                _decode_file(source, self.root / "output.bin")
+                self.decode(source)
 
     def test_streaming_all_padding_lengths_and_whitespace(self):
         for size in (1, 2, 3, BLOCK_BYTES - 1, BLOCK_BYTES, BLOCK_BYTES + 1, BLOCK_BYTES * 2 + 2):
@@ -172,10 +174,8 @@ class Base64Tests(WorkspaceTest):
             encoded = base64.b64encode(data)
             wrapped = b"\r\n".join(encoded[i : i + 77] for i in range(0, len(encoded), 77))
             source = self.root / "input.txt"
-            target = self.root / "output.bin"
             source.write_bytes(b" \t" + wrapped + b"\n\v\f")
-            _decode_file(source, target)
-            self.assertEqual(target.read_bytes(), data)
+            self.assertEqual(self.decode(source), data)
 
     def test_invalid_data(self):
         for data in (
@@ -191,10 +191,10 @@ class Base64Tests(WorkspaceTest):
             source = self.root / "input.txt"
             source.write_bytes(data)
             with self.subTest(data=data), self.assertRaises(BundleError):
-                _decode_file(source, self.root / "out.bin")
+                self.decode(source)
 
     def test_padding_followed_by_another_chunk(self):
         source = self.root / "input.txt"
         source.write_bytes(b"A" * (BLOCK_BYTES - 4) + b"AA==" + b"AAAA")
         with self.assertRaisesRegex(BundleError, "after Base64 padding"):
-            _decode_file(source, self.root / "out.bin")
+            self.decode(source)

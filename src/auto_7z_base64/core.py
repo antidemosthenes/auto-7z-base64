@@ -128,7 +128,7 @@ def decode(
                 progress(f"Reconstructing {name}.7z from {len(parts)} part(s)...")
             with archive.open("wb") as writer:
                 for source in parts:
-                    _decode_file(source, writer, checksum=False)
+                    _decode_file(source, writer)
             try:
                 if progress:
                     progress(f"Checking archive entries in {name}.7z...")

@@ -1,7 +1,9 @@
 import os
 import subprocess
 import sys
-from pathlib import Path, PureWindowsPath
+from collections.abc import Iterator
+from io import StringIO
+from pathlib import Path
 
 from .errors import BundleError
 from .filesystem import _absolute, _valid_name
@@ -49,32 +51,44 @@ def _run_7z(executable: Path, arguments: list[str], cwd: Path | None = None) -> 
     return result.stdout
 
 
-def _validate_members(listing: str) -> None:
-    lines = listing.replace("\r\n", "\n").split("\n")
-    try:
-        start = lines.index("----------")
-    except ValueError as exc:
-        raise BundleError("Cannot read the 7-Zip archive listing.") from exc
-    if "Type = 7z" not in lines[:start]:
+def _member_records(listing: str) -> Iterator[dict[str, str]]:
+    lines = (
+        line[:-2] if line.endswith("\r\n") else line.removesuffix("\n")
+        for line in StringIO(listing)
+    )
+    is_7z = False
+    for line in lines:
+        if line == "----------":
+            break
+        if line == "Type = 7z":
+            is_7z = True
+    else:
+        raise BundleError("Cannot read the 7-Zip archive listing.")
+    if not is_7z:
         raise BundleError("Decoded volumes must contain a 7z archive.")
-    records: list[dict[str, str]] = []
+
     record: dict[str, str] = {}
-    for line in [*lines[start + 1 :], ""]:
+    for line in lines:
         if not line:
             if record:
-                records.append(record)
+                yield record
                 record = {}
             continue
         key, separator, value = line.partition(" = ")
         if not separator or key in record:
             raise BundleError("Unsupported or ambiguous archive listing.")
         record[key] = value
+    if record:
+        yield record
+
+
+def _validate_members(listing: str) -> None:
     entries: dict[str, bool] = {}
-    for record in records:
+    for record in _member_records(listing):
         if "Path" not in record:
             raise BundleError("Archive entry has no path.")
         path = record["Path"]
-        if not path or path.startswith(("/", "\\")) or PureWindowsPath(path).drive:
+        if not path or path.startswith(("/", "\\")) or ":" in path:
             raise BundleError(f"Unsafe archive path: {path!r}")
         components = path.replace("\\", "/").split("/")
         for component in components:
@@ -90,8 +104,8 @@ def _validate_members(listing: str) -> None:
             raise BundleError(f"Conflicting archive paths: {path}")
         entries[normalized] = directory
     for path in entries:
-        components = path.split("/")
-        for depth in range(1, len(components)):
-            parent = "/".join(components[:depth])
-            if parent in entries and not entries[parent]:
+        parent = path.rpartition("/")[0]
+        while parent:
+            if entries.get(parent) is False:
                 raise BundleError(f"Archive file also used as a directory: {parent}")
+            parent = parent.rpartition("/")[0]
